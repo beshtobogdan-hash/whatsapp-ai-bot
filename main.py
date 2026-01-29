@@ -2,22 +2,32 @@ import requests
 import time
 import json 
 import os 
-try:
-    from dotenv import load_dotenv # Подключаем библиотеку для чтения .env файла локально
-    load_dotenv() # Загружаем переменные из .env файла
-except ImportError:
-    print("Библиотека dotenv не установлена. Установите: pip install python-dotenv")
-    exit()
+import threading
+from flask import Flask # Нужно добавить в requirements.txt
 
-# ТЕПЕРЬ ВСЕ ДАННЫЕ БЕРУТСЯ ИЗ ПЕРЕМЕННЫХ ОКРУЖЕНИЯ
+# --- ИНИЦИАЛИЗАЦИЯ FLASK (чтобы Render не ругался) ---
+app = Flask(__name__)
+
+@app.route('/')
+def health_check():
+    return "Bot is running", 200
+
+# --- ОСНОВНАЯ ЛОГИКА БОТА ---
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 FOLDER_ID = os.environ.get("FOLDER_ID")
 YANDEX_API_KEY = os.environ.get("YANDEX_API_KEY") 
 GREEN_ID = os.environ.get("GREEN_ID")
 GREEN_TOKEN = os.environ.get("GREEN_TOKEN")
 
 def get_yandex_gpt_answer(text):
-    """Отправляет запрос к YandexGPT и возвращает ответ."""
-    url = "https://llm.api.cloud.yandex.net/foundationModels/v1/completion"  # ИСПРАВЛЕННЫЙ URL!
+    """Запрос к YandexGPT с ролью Богдана."""
+    url = "https://llm.api.cloud.yandex.net"
     headers = {
         "Authorization": f"Api-Key {YANDEX_API_KEY}",
         "Content-Type": "application/json"
@@ -26,10 +36,14 @@ def get_yandex_gpt_answer(text):
     payload = {
         "modelUri": f"gpt://{FOLDER_ID}/yandexgpt-lite",
         "completionOptions": {
-            "temperature": 0.6,
+            "temperature": 0.3, # Меньше температура — более четкие ответы
             "maxTokens": 1000
         },
         "messages": [
+            {
+                "role": "system",
+                "text": "Ты — Богдан. Ты отвечаешь в WhatsApp. Пиши коротко, по делу и вежливо. Если спрашивают что-то, в чем ты не уверен, скажи: 'Я сейчас занят, отвечу лично позже'. Не веди себя как робот, отвечай как человек."
+            },
             {
                 "role": "user",
                 "text": text
@@ -38,90 +52,61 @@ def get_yandex_gpt_answer(text):
     }
     
     try:
-        res = requests.post(url, headers=headers, json=payload)
-        
+        res = requests.post(url, headers=headers, json=payload, timeout=15)
         if res.status_code == 200:
-            response_data = res.json()
-            print(f"Ответ YandexGPT: {json.dumps(response_data, ensure_ascii=False, indent=2)}")
-            
-            # Извлекаем текст ответа (ПРАВИЛЬНЫЙ ПУТЬ ДОСТУПА)
-            if 'result' in response_data and 'alternatives' in response_data['result']:
-                # alternatives - это список, берем первый элемент
-                if len(response_data['result']['alternatives']) > 0:
-                    return response_data['result']['alternatives'][0]['message']['text']
-                else:
-                    return "Пустой ответ от ИИ"
-            else:
-                print(f"Неожиданная структура ответа: {response_data}")
-                return "Прости, ИИ ответил странно."
-        else:
-            print(f"Ошибка YandexGPT: {res.status_code}, {res.text}")
-            return "Прости, я приболел. Скоро вернусь!"
-            
+            result = res.json().get('result', {})
+            alternatives = result.get('alternatives', [])
+            if alternatives:
+                return alternatives[0]['message']['text']
+        return "Я сейчас немного занят, напишу чуть позже!"
     except Exception as e:
-        print(f"Ошибка при запросе к YandexGPT: {e}")
-        return "Прости, проблемы с подключением."
-
+        print(f"Ошибка GPT: {e}")
+        return "На связи! Скоро отвечу."
 
 def run_bot():
-    print("Бот запущен и слушает WhatsApp...")
+    """Цикл проверки сообщений."""
+    print("Бот Богдана запущен...")
     while True:
-        receive_url = f"https://api.green-api.com/waInstance{GREEN_ID}/receiveNotification/{GREEN_TOKEN}"  # ИСПРАВЛЕННЫЙ URL
+        receive_url = f"https://api.green-api.com{GREEN_ID}/receiveNotification/{GREEN_TOKEN}"
         try:
-            resp = requests.get(receive_url)
-            
-            if resp.status_code == 200:
+            resp = requests.get(receive_url, timeout=20)
+            if resp.status_code == 200 and resp.json():
                 data = resp.json()
-                if data:  # Если есть данные
-                    receipt_id = data['receiptId']
-                    body = data['body']
+                receipt_id = data['receiptId']
+                body = data['body']
+                
+                if body.get('typeWebhook') == 'incomingMessageReceived':
+                    chat_id = body['senderData']['chatId']
                     
-                    if body.get('typeWebhook') == 'incomingMessageReceived':
-                        chat_id = body['senderData']['chatId']
+                    # Проверка: не отвечаем самим себе и в группы (на бесплатном тарифе)
+                    if 'messageData' in body and 'textMessageData' in body['messageData']:
+                        msg_text = body['messageData']['textMessageData']['textMessage']
                         
-                        # Проверяем наличие текстового сообщения
-                        if 'messageData' in body and 'textMessageData' in body['messageData']:
-                            msg_text = body['messageData']['textMessageData']['textMessage']
-                            
-                            print(f"Пришло сообщение от {chat_id}: {msg_text}")
-                            
-                            # Получаем ответ от ИИ
+                        # Если это личное сообщение (не группа)
+                        if "@c.us" in chat_id:
+                            print(f"Новое сообщение от {chat_id}: {msg_text}")
                             ai_text = get_yandex_gpt_answer(msg_text)
                             
-                            # Отправляем ответ
-                            send_url = f"https://api.green-api.com/waInstance{GREEN_ID}/sendMessage/{GREEN_TOKEN}"  # ИСПРАВЛЕННЫЙ URL
-                            send_data = {
-                                "chatId": chat_id,
-                                "message": ai_text
-                            }
-                            
-                            send_resp = requests.post(send_url, json=send_data)
-                            if send_resp.status_code == 200:
-                                print(f"✅ Ответ отправлен в {chat_id}")
-                            else:
-                                print(f"❌ Ошибка отправки: {send_resp.text}")
-                        
-                    # Удаляем уведомление
-                    delete_url = f"https://api.green-api.com/waInstance{GREEN_ID}/deleteNotification/{GREEN_TOKEN}/{receipt_id}"  # ИСПРАВЛЕННЫЙ URL
-                    requests.delete(delete_url)
-                    print(f"Уведомление {receipt_id} удалено")
+                            send_url = f"https://api.green-api.com{GREEN_ID}/sendMessage/{GREEN_TOKEN}"
+                            requests.post(send_url, json={"chatId": chat_id, "message": ai_text})
+                
+                # Удаляем уведомление, чтобы не обрабатывать его дважды
+                delete_url = f"https://api.green-api.com{GREEN_ID}/deleteNotification/{GREEN_TOKEN}/{receipt_id}"
+                requests.delete(delete_url)
             
-            time.sleep(2)  # Пауза между проверками
-
-        except requests.exceptions.RequestException as e:
-            print(f"Ошибка сети: {e}")
-            time.sleep(5)
-        except json.decoder.JSONDecodeError:
-            print("Ошибка парсинга JSON")
+            time.sleep(1)
         except Exception as e:
-            print(f"Произошла непредвиденная ошибка: {e}")
+            print(f"Ошибка цикла: {e}")
             time.sleep(5)
+
+# --- ЗАПУСК ---
 
 if __name__ == "__main__":
-    # Тестовый запуск YandexGPT
-    print("Тестируем подключение к YandexGPT...")
-    test = get_yandex_gpt_answer("Привет! Ответь коротко: как дела?")
-    print(f"Тестовый ответ: {test}")
+    # Запускаем бота в отдельном потоке
+    bot_thread = threading.Thread(target=run_bot)
+    bot_thread.daemon = True
+    bot_thread.start()
     
-    # Запускаем бота
-    run_bot()
+    # Запускаем веб-сервер для Render (порт берется из системы)
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host='0.0.0.0', port=port)
