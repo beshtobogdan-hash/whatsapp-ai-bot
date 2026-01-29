@@ -20,12 +20,12 @@ GREEN_TOKEN = os.getenv("GREEN_TOKEN")
 FOLDER_ID = os.getenv("FOLDER_ID")
 YANDEX_API_KEY = os.getenv("YANDEX_API_KEY")
 
-print(f"=== НАСТРОЙКИ ===")
+print(f"=== НАСТРОЙКИ БОТА ===")
 print(f"GREEN_ID: {GREEN_ID}")
-print(f"GREEN_TOKEN: {GREEN_TOKEN[:10]}...")  # Показываем только начало токена
+print(f"GREEN_TOKEN: {GREEN_TOKEN[:10]}...")
 print(f"FOLDER_ID: {FOLDER_ID}")
 print(f"YANDEX_API_KEY: {YANDEX_API_KEY[:10]}...")
-print(f"=================")
+print(f"======================")
 
 def get_yandex_gpt_answer(text):
     """Запрос к YandexGPT."""
@@ -71,95 +71,111 @@ def get_yandex_gpt_answer(text):
         return "На связи! Скоро буду."
 
 def run_bot():
-    """Цикл WhatsApp."""
+    """Основной цикл WhatsApp бота."""
     print(">>> БОТ БОГДАНА ЗАПУЩЕН...")
     
     while True:
         try:
-            # ПРАВИЛЬНЫЙ URL для получения сообщений
+            # URL для получения уведомлений
             receive_url = f"https://api.green-api.com/waInstance{GREEN_ID}/receiveNotification/{GREEN_TOKEN}"
-            print(f"[GreenAPI] Проверяем сообщения: {receive_url}")
             
+            # Получаем уведомления
             resp = requests.get(receive_url, timeout=30)
-            print(f"[GreenAPI] Статус запроса: {resp.status_code}")
             
             if resp.status_code == 200:
                 data = resp.json()
-                print(f"[GreenAPI] Получены данные: {data}")
                 
-                if data is not None:  # Проверяем, что есть сообщения
+                if data is not None:  # Есть новые уведомления
                     receipt_id = data['receiptId']
                     body = data.get('body', {})
-                    print(f"[GreenAPI] Тип вебхука: {body.get('typeWebhook')}")
+                    webhook_type = body.get('typeWebhook', '')
                     
-                    if body.get('typeWebhook') == 'incomingMessageReceived':
-                        chat_id = body['senderData']['chatId']
-                        print(f"[GreenAPI] Сообщение от: {chat_id}")
-                        
-                        # Проверяем наличие текстового сообщения
+                    print(f"[GreenAPI] Тип вебхука: {webhook_type}")
+                    
+                    # Обрабатываем ТОЛЬКО входящие сообщения к боту
+                    if webhook_type == 'incomingMessageReceived':
+                        sender_data = body.get('senderData', {})
                         message_data = body.get('messageData', {})
+                        
+                        # Извлекаем данные
+                        chat_id = sender_data.get('chatId', '')
+                        sender = sender_data.get('sender', '')
+                        
+                        # Проверяем, что это текстовое сообщение
                         if 'textMessageData' in message_data:
                             msg_text = message_data['textMessageData']['textMessage']
-                            print(f"[GreenAPI] Текст: {msg_text}")
                             
-                            if "@c.us" in chat_id:  # Только личные сообщения
-                                print(f"💬 ВОПРОС от {chat_id}: {msg_text}")
-                                
+                            print(f"💬 ВХОДЯЩЕЕ от {sender}: {msg_text}")
+                            
+                            # Проверяем, что это не группа
+                            if "@g.us" not in chat_id:
                                 # Получаем ответ от ИИ
                                 ai_text = get_yandex_gpt_answer(msg_text)
                                 
                                 # Отправляем ответ
                                 send_url = f"https://api.green-api.com/waInstance{GREEN_ID}/sendMessage/{GREEN_TOKEN}"
                                 send_data = {
-                                    "chatId": chat_id,
+                                    "chatId": sender,
                                     "message": ai_text
                                 }
                                 
-                                print(f"[GreenAPI] Отправка: {send_url}")
                                 send_resp = requests.post(send_url, json=send_data)
-                                print(f"[GreenAPI] Статус отправки: {send_resp.status_code}")
-                                
                                 if send_resp.status_code == 200:
-                                    print("✅ Сообщение отправлено успешно")
+                                    print(f"✅ Ответ отправлен {sender}")
                                 else:
-                                    print(f"❌ Ошибка отправки: {send_resp.text}")
-                        
-                        # Удаляем уведомление после обработки
-                        delete_url = f"https://api.green-api.com/waInstance{GREEN_ID}/deleteNotification/{GREEN_TOKEN}/{receipt_id}"
-                        print(f"[GreenAPI] Удаление уведомления: {delete_url}")
-                        requests.delete(delete_url)
+                                    print(f"❌ Ошибка отправки: {send_resp.status_code}")
+                    
+                    # ВСЕГДА удаляем уведомление после обработки
+                    delete_url = f"https://api.green-api.com/waInstance{GREEN_ID}/deleteNotification/{GREEN_TOKEN}/{receipt_id}"
+                    requests.delete(delete_url)
+                    print(f"[GreenAPI] Уведомление {receipt_id} удалено")
+                    
                 else:
+                    # Нет новых сообщений
                     print("[GreenAPI] Нет новых сообщений")
-                
-                time.sleep(2)  # Небольшая пауза между проверками
             
-            elif resp.status_code == 404:
-                print("❌ ОШИБКА 404: Проверь GREEN_ID и GREEN_TOKEN!")
+            elif resp.status_code == 400:
+                print("[GreenAPI] Ошибка 400: Неверный запрос. Проверь токен.")
+                time.sleep(10)
+            elif resp.status_code == 401:
+                print("[GreenAPI] Ошибка 401: Не авторизован. Проверь ID и токен.")
                 time.sleep(10)
             else:
-                print(f"⚠️ Ошибка получения сообщений: {resp.status_code}")
+                print(f"[GreenAPI] Неожиданный статус: {resp.status_code}")
                 time.sleep(10)
-                
+            
+            # Пауза между проверками
+            time.sleep(2)
+            
         except requests.exceptions.Timeout:
-            print("⏰ Таймаут запроса к Green API")
+            print("[GreenAPI] Таймаут запроса")
             time.sleep(10)
         except Exception as e:
-            print(f"🔥 Общая ошибка в run_bot: {e}")
+            print(f"[GreenAPI] Критическая ошибка: {e}")
             time.sleep(10)
 
 if __name__ == "__main__":
-    # Проверяем, что все переменные загружены
+    # Проверка переменных окружения
     if not all([GREEN_ID, GREEN_TOKEN, FOLDER_ID, YANDEX_API_KEY]):
         print("❌ ОШИБКА: Не все переменные окружения загружены!")
         print("Проверь .env файл или настройки Render")
-    else:
-        print("✅ Все переменные окружения загружены")
+        exit(1)
     
     # Запуск бота в отдельном потоке
     bot_thread = threading.Thread(target=run_bot, daemon=True)
     bot_thread.start()
+    print("✅ Бот запущен в фоновом режиме")
     
     # Запуск Flask сервера для Render
     port = int(os.environ.get("PORT", 10000))
-    print(f"🌐 Запуск веб-сервера на порту {port}")
+    print(f"🌐 Веб-сервер запускается на порту {port}")
+    print(f"📊 Проверить статус: http://127.0.0.1:{port}")
+    print("========================================")
+    print("ИНСТРУКЦИЯ ПО ТЕСТИРОВАНИЮ:")
+    print("1. Возьми другой телефон с WhatsApp")
+    print("2. Сохрани номер +79994929247 в контакты")
+    print("3. Напиши 'Привет' или любой вопрос")
+    print("4. Бот должен ответить через 5-10 секунд")
+    print("========================================")
+    
     app.run(host='0.0.0.0', port=port, debug=False)
