@@ -2,6 +2,8 @@ import requests
 import time
 import os 
 import threading
+import atexit
+import sys
 from flask import Flask
 from dotenv import load_dotenv
 
@@ -14,6 +16,10 @@ app = Flask(__name__)
 def health_check():
     return "Бот Богдана активен", 200
 
+@app.route('/ping')
+def ping():
+    return "Pong! Bot is alive", 200
+
 # --- ТВОИ ДАННЫЕ ИЗ .env ---
 GREEN_ID = os.getenv("GREEN_ID")
 GREEN_TOKEN = os.getenv("GREEN_TOKEN")
@@ -22,7 +28,6 @@ YANDEX_API_KEY = os.getenv("YANDEX_API_KEY")
 
 print(f"=== НАСТРОЙКИ БОТА ===")
 print(f"GREEN_ID: {GREEN_ID}")
-print(f"GREEN_TOKEN: {GREEN_TOKEN[:10]}...")
 print(f"FOLDER_ID: {FOLDER_ID}")
 print(f"YANDEX_API_KEY: {YANDEX_API_KEY[:10]}...")
 print(f"======================")
@@ -154,6 +159,32 @@ def run_bot():
             print(f"[GreenAPI] Критическая ошибка: {e}")
             time.sleep(10)
 
+def keep_render_awake():
+    """Фоновая задача для self-ping каждые 8 минут."""
+    import datetime
+    
+    print("🔄 Keep-Alive сервис запущен")
+    
+    while True:
+        try:
+            # Пингуем сами себя
+            response = requests.get("https://whatsapp-ai-bot-h176.onrender.com/ping", timeout=10)
+            current_time = datetime.datetime.now().strftime("%H:%M:%S")
+            print(f"🔄 Self-ping в {current_time}: Статус {response.status_code}")
+        except Exception as e:
+            current_time = datetime.datetime.now().strftime("%H:%M:%S")
+            print(f"⚠️  Self-ping не удался в {current_time}: {e}")
+        
+        # Ждем 8 минут (480 секунд) - меньше 15 минут сна Render
+        time.sleep(480)
+
+def on_exit():
+    """Функция при завершении работы."""
+    print("⚠️  Бот завершает работу...")
+
+# Регистрируем функцию завершения
+atexit.register(on_exit)
+
 if __name__ == "__main__":
     # Проверка переменных окружения
     if not all([GREEN_ID, GREEN_TOKEN, FOLDER_ID, YANDEX_API_KEY]):
@@ -161,21 +192,30 @@ if __name__ == "__main__":
         print("Проверь .env файл или настройки Render")
         exit(1)
     
-    # Запуск бота в отдельном потоке
+    # Запуск Keep-Alive в отдельном потоке
+    print("🔄 Запуск Keep-Alive сервиса...")
+    keep_alive_thread = threading.Thread(target=keep_render_awake, daemon=True)
+    keep_alive_thread.start()
+    
+    # Запуск WhatsApp бота в отдельном потоке
+    print("🤖 Запуск WhatsApp бота...")
     bot_thread = threading.Thread(target=run_bot, daemon=True)
     bot_thread.start()
-    print("✅ Бот запущен в фоновом режиме")
     
     # Запуск Flask сервера для Render
     port = int(os.environ.get("PORT", 10000))
     print(f"🌐 Веб-сервер запускается на порту {port}")
-    print(f"📊 Проверить статус: http://127.0.0.1:{port}")
+    print(f"📡 Keep-Alive активен (пинг каждые 8 минут)")
+    print(f"🔗 Основной URL: https://whatsapp-ai-bot-h176.onrender.com")
+    print(f"🔗 Ping URL: https://whatsapp-ai-bot-h176.onrender.com/ping")
     print("========================================")
-    print("ИНСТРУКЦИЯ ПО ТЕСТИРОВАНИЮ:")
-    print("1. Возьми другой телефон с WhatsApp")
-    print("2. Сохрани номер +79994929247 в контакты")
-    print("3. Напиши 'Привет' или любой вопрос")
-    print("4. Бот должен ответить через 5-10 секунд")
+    print("✅ ВСЕ СИСТЕМЫ ЗАПУЩЕНЫ")
     print("========================================")
     
-    app.run(host='0.0.0.0', port=port, debug=False)
+    try:
+        # Бесконечный цикл для предотвращения завершения
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("\n👋 Бот остановлен вручную")
+        sys.exit(0)
